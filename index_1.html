@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Excel nuskaitymo pavyzdys (su grupavimu)</title>
+    <!-- Įkeliame Bootstrap CSS, kad lentelė atrodytų spalvotai/dryžuota -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            margin: 20px;
+        }
+        h1 {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Excel nuskaitymo pavyzdys</h1>
+
+    <div class="mb-3">
+        <input type="file" id="excelFile" accept=".xls,.xlsx,.csv" />
+        <button class="btn btn-success" onclick="processExcel()">Įkelti Excel</button>
+    </div>
+
+    <div id="result"></div>
+
+    <script>
+        // Pagrindinė funkcija, kuri nuskaito Excel failą ir apdoroja duomenis
+        function processExcel() {
+            const fileInput = document.getElementById('excelFile');
+            if (!fileInput.files.length) {
+                alert('Pasirinkite failą');
+                return;
+            }
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    // Paimame pirmą lapą
+                    const sheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[sheetName];
+                    // Konvertuojame į dvimatį masyvą (eilutės, stulpeliai)
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+                        header: 1,
+                        defval: ""
+                    });
+                    // Surandame antraščių eilutę ir stulpelių indeksus
+                    const info = findHeaderRowAndColumns(jsonData);
+                    if (!info) {
+                        throw new Error("Neradau eilutės su stulpeliu 'Rezoliucija' ar pan.");
+                    }
+                    const { headerIndex, resolutionCol, typeCol, addressCol, codeCol } = info;
+                    // Nuo antraščių eilutės + 1 iki failo pabaigos – realūs duomenys
+                    const dataRows = jsonData.slice(headerIndex + 1);
+                    // Paverčiame kiekvieną eilutę į objektą
+                    const transformed = dataRows.map(row => ({
+                        Rezoliucija: resolutionCol !== -1 ? row[resolutionCol] : "",
+                        Tipas:       typeCol       !== -1 ? row[typeCol]       : "",
+                        Adresas:     addressCol    !== -1 ? row[addressCol]    : "",
+                        Kodas:       codeCol       !== -1 ? row[codeCol]       : ""
+                    })).filter(obj => obj.Rezoliucija);
+                    
+                    // Atvaizduojame rezultatus grupuotus pagal rezoliuciją
+                    showGroupedResults(transformed);
+                } catch (err) {
+                    console.error(err);
+                    alert("Klaida: " + err.message);
+                }
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        /**
+         * Pereina per pirmas ~100 eilučių ir bando surasti eilutę, kurioje yra
+         * stulpeliai: "Rezoliucija", "Tipas", "Adresas", "Kodas".
+         * Grąžina surastos eilutės indeksą bei stulpelių indeksus.
+         */
+        function findHeaderRowAndColumns(jsonData) {
+            const maxRowsToCheck = Math.min(jsonData.length, 100);
+            for (let i = 0; i < maxRowsToCheck; i++) {
+                const row = jsonData[i];
+                if (!row || row.length === 0) continue;
+
+                let resolutionCol = -1, typeCol = -1, addressCol = -1, codeCol = -1;
+                row.forEach((cellValue, colIndex) => {
+                    const lowerVal = String(cellValue).toLowerCase().trim();
+                    if (lowerVal.includes("rezoliucija")) resolutionCol = colIndex;
+                    if (lowerVal.includes("tipas"))       typeCol = colIndex;
+                    if (lowerVal.includes("adresas"))     addressCol = colIndex;
+                    if (lowerVal.includes("kodas"))       codeCol = colIndex;
+                });
+                // Svarbiausia rasti Rezoliucijos stulpelį, jei radome, grąžiname indeksus
+                if (resolutionCol !== -1) {
+                    return {
+                        headerIndex: i,
+                        resolutionCol,
+                        typeCol,
+                        addressCol,
+                        codeCol
+                    };
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Grupuoja įrašus pagal Rezoliuciją.
+         * Kiekvienai rezoliucijai surenka ekranų informaciją į masyvą.
+         * Pvz.: "800*400" -> ["[Kodas] Tipas Adresas", ...]
+         */
+        function groupByResolution(data) {
+            const groupMap = {};
+            data.forEach(item => {
+                const rez = String(item.Rezoliucija).trim();
+                if (!groupMap[rez]) {
+                    groupMap[rez] = [];
+                }
+                // Formatuojame ekranų informaciją – jei reikšmės egzistuoja, pridedame jas
+                let screenInfo = "";
+                if (item.Kodas)   screenInfo += "[" + item.Kodas + "]";
+                if (item.Tipas)   screenInfo += " " + item.Tipas;
+                if (item.Adresas) screenInfo += " " + item.Adresas;
+                screenInfo = screenInfo.trim();
+                groupMap[rez].push(screenInfo);
+            });
+            // Paverčiame objektą į masyvą, kad būtų patogu atvaizduoti
+            return Object.entries(groupMap).map(([rez, screens]) => ({
+                rez,
+                screens
+            }));
+        }
+
+        /**
+         * Atvaizduoja sugrupuotus duomenis lentelėje, kur:
+         * - Pirmame stulpelyje rodoma rezoliucija,
+         * - Antrame – ekranų sąrašas, atskirtas <br> ženklais.
+         */
+        function showGroupedResults(data) {
+            const grouped = groupByResolution(data);
+            // Rikiuojame pagal rezoliucijos pavadinimą (jei reikia)
+            grouped.sort((a, b) => a.rez.localeCompare(b.rez));
+            const container = document.getElementById('result');
+            if (!grouped.length) {
+                container.innerHTML = "<p>Nerasta jokių duomenų.</p>";
+                return;
+            }
+            let html = `
+                <table class="table table-bordered table-striped">
+                    <thead>
+                        <tr>
+                            <th>Rezoliucija</th>
+                            <th>Ekranai</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            grouped.forEach(item => {
+                // Ekranus išvedame per <br>, kad kiekvienas būtų naujoje eilutėje
+                const screensHtml = item.screens.join("<br>");
+                html += `
+                    <tr>
+                        <td><b>${item.rez}</b></td>
+                        <td>${screensHtml}</td>
+                    </tr>
+                `;
+            });
+            html += `
+                    </tbody>
+                </table>
+            `;
+            container.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
