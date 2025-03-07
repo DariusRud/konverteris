@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LED Klipų Konverteris</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        .hidden {
+            display: none;
+        }
+        .progress {
+            height: 25px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .section h3 {
+            margin-top: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="mb-4">LED Klipų Konverteris (MVP)</h1>
+        
+        <div class="section">
+            <h3>1. Užsakymo failo įkėlimas</h3>
+            <div class="mb-3">
+                <label for="excelFile" class="form-label">Pasirinkite Excel failą su ekranų informacija</label>
+                <input type="file" class="form-control" id="excelFile" accept=".xlsx,.xls,.csv">
+            </div>
+            <button id="analyzeExcelBtn" class="btn btn-primary">Analizuoti Excel</button>
+            <div id="excelResult" class="mt-3"></div>
+        </div>
+        
+        <div class="section">
+            <h3>2. Klipo failo įkėlimas</h3>
+            <div class="mb-3">
+                <label for="videoFile" class="form-label">Pasirinkite video failą</label>
+                <input type="file" class="form-control" id="videoFile" accept=".mp4,.avi,.mov">
+            </div>
+            <button id="analyzeVideoBtn" class="btn btn-primary">Analizuoti video</button>
+            <div id="videoResult" class="mt-3"></div>
+        </div>
+        
+        <div class="section">
+            <h3>3. Failų generavimas</h3>
+            <p>Sugeneruoti failai pagal reikiamas rezoliucijas:</p>
+            <div id="generationForm">
+                <!-- Čia bus generuojama generavimo forma su rezoliucijomis -->
+            </div>
+            <div id="manualOrderForm" class="border p-3 rounded mt-3 mb-3 hidden">
+                <h5>Trūkstami duomenys</h5>
+                <div class="row">
+                    <div class="col-md-4 mb-2">
+                        <label for="orderNumberInput" class="form-label">Užsakymo numeris:</label>
+                        <input type="text" class="form-control" id="orderNumberInput">
+                    </div>
+                    <div class="col-md-4 mb-2">
+                        <label for="weekNumberInput" class="form-label">Savaitės numeris:</label>
+                        <input type="number" class="form-control" id="weekNumberInput" min="1" max="53">
+                    </div>
+                    <div class="col-md-4 mb-2">
+                        <label for="clientNameInput" class="form-label">Kliento pavadinimas:</label>
+                        <input type="text" class="form-control" id="clientNameInput">
+                    </div>
+                </div>
+                <button id="updateOrderInfoBtn" class="btn btn-secondary">Atnaujinti informaciją</button>
+            </div>
+            <button id="generateBtn" class="btn btn-success mt-3" disabled>Generuoti konvertuotus failus</button>
+            <button id="toggleManualBtn" class="btn btn-outline-secondary mt-3 ml-2">Rodyti rankinį įvedimą</button>
+            <div id="generationProgress" class="progress mt-3 hidden">
+                <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+            </div>
+            <div id="generationResult" class="mt-3"></div>
+        </div>
+        
+        <div class="section">
+            <h3>4. Rezultatai</h3>
+            <div id="downloadSection" class="hidden">
+                <p>Konvertuoti failai paruošti parsisiuntimui:</p>
+                <div id="downloadLinks"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Pagrindiniai elementai
+            const excelFileInput = document.getElementById('excelFile');
+            const videoFileInput = document.getElementById('videoFile');
+            const analyzeExcelBtn = document.getElementById('analyzeExcelBtn');
+            const analyzeVideoBtn = document.getElementById('analyzeVideoBtn');
+            const generateBtn = document.getElementById('generateBtn');
+            const toggleManualBtn = document.getElementById('toggleManualBtn');
+            const manualOrderForm = document.getElementById('manualOrderForm');
+            const updateOrderInfoBtn = document.getElementById('updateOrderInfoBtn');
+            const orderNumberInput = document.getElementById('orderNumberInput');
+            const weekNumberInput = document.getElementById('weekNumberInput');
+            const clientNameInput = document.getElementById('clientNameInput');
+            const excelResultDiv = document.getElementById('excelResult');
+            const videoResultDiv = document.getElementById('videoResult');
+            const generationFormDiv = document.getElementById('generationForm');
+            const generationProgressDiv = document.getElementById('generationProgress');
+            const progressBar = generationProgressDiv.querySelector('.progress-bar');
+            const generationResultDiv = document.getElementById('generationResult');
+            const downloadSection = document.getElementById('downloadSection');
+            const downloadLinksDiv = document.getElementById('downloadLinks');
+            
+            // Globalūs duomenys
+            window.resolutionsData = [];
+            window.videoFileData = null;
+            window.orderInfo = { orderNumber: '', weekNumber: '', clientName: '' };
+            
+            // Funkcija ištraukti užsakymo informaciją iš Excel
+            function extractOrderInfo(jsonData) {
+                let orderInfo = {
+                    orderNumber: null,
+                    weekNumber: null,
+                    clientName: null
+                };
+                
+                // Pereiname per visus Excel duomenis ieškodami reikalingos informacijos
+                for (let i = 0; i < jsonData.length; i++) {
+                    const row = jsonData[i];
+                    if (!row) continue;
+                    
+                    // Ieškome užsakymo numerio, kliento, datos
+                    for (let j = 0; j < row.length - 1; j++) {
+                        const cell = String(row[j] || '').toLowerCase();
+                        const nextCell = row[j+1] ? String(row[j+1]) : '';
+                        
+                        // Ieškome užsakymo numerio
+                        if ((cell.includes('dokumento numeris') || cell.includes('užsakymo nr') || 
+                            cell.includes('užsak. nr') || cell.includes('užsakymo numeris')) && nextCell) {
+                            orderInfo.orderNumber = nextCell.trim();
+                        }
+                        
+                        // Ieškome kliento
+                        if ((cell.includes('klientas') || cell.includes('kliento pav') || 
+                            cell.includes('klientas:')) && nextCell) {
+                            orderInfo.clientName = nextCell.trim();
+                        }
+                        
+                        // Bandome ištraukti savaitės numerį iš datos
+                        if ((cell.includes('data') || cell.includes('dokumento data')) && nextCell) {
+                            try {
+                                // Bandome skirtingus datos formatus
+                                let dateStr = nextCell.trim();
+                                let date;
+                                
+                                // Bandome standartinį formatą su brūkšneliais (YYYY-MM-DD)
+                                if (dateStr.match(/\d{4}-\d{1,2}-\d{1,2}/)) {
+                                    date = new Date(dateStr);
+                                } 
+                                // Bandome formatą su taškais (DD.MM.YYYY)
+                                else if (dateStr.match(/\d{1,2}\.\d{1,2}\.\d{4}/)) {
+                                    const parts = dateStr.split('.');
+                                    date = new Date(parts[2], parts[1] - 1, parts[0]);
+                                }
+                                
+                                if (date && !isNaN(date.getTime())) {
+                                    // Skaičiuojame savaitės numerį (ISO savaitė, 1-52)
+                                    const weekNumber = getWeekNumber(date);
+                                    orderInfo.weekNumber = weekNumber;
+                                }
+                            } catch (e) {
+                                console.error("Klaida konvertuojant datą:", e);
+                            }
+                        }
+                    }
+                }
+                
+                // Ieškome papildomos informacijos lentelėse
+                const tableData = findTableData(jsonData);
+                if (tableData) {
+                    if (tableData.clientName && !orderInfo.clientName) {
+                        orderInfo.clientName = tableData.clientName;
+                    }
+                    if (tableData.orderNumber && !orderInfo.orderNumber) {
+                        orderInfo.orderNumber = tableData.orderNumber;
+                    }
+                }
+                
+                return orderInfo;
+            }
+            
+            // Funkcija savaitės numeriui gauti
+            function getWeekNumber(date) {
+                const d = new Date(date);
+                d.setHours(0, 0, 0, 0);
+                d.setDate(d.getDate() + 3 - (d.getDay() + 6) % 7);
+                const week1 = new Date(d.getFullYear(), 0, 4);
+                return 1 + Math.round(((d.getTime() - week1.getTime()) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);
+            }
+            
+            // Funkcija informacijos paieškai lentelėse
+            function findTableData(jsonData) {
+                // Ieškome lentelių struktūrų
+                for (let i = 0; i < jsonData.length; i++) {
+                    const row = jsonData[i];
+                    if (!row) continue;
+                    
+                    // Ieškome eilutės su stulpeliais "Kodas", "Nr.", "Kampanija", "Klientas" ar pan.
+                    let hasTableHeaders = false;
+                    let codeIndex = -1;
+                    let clientIndex = -1;
+                    let campaignIndex = -1;
+                    let orderIndex = -1;
+                    
+                    for (let j = 0; j < row.length; j++) {
+                        const cell = String(row[j] || '').toLowerCase();
+                        
+                        if (cell.includes('kodas')) {
+                            codeIndex = j;
+                            hasTableHeaders = true;
+                        } else if (cell.includes('klientas') || cell.includes('kliento')) {
+                            clientIndex = j;
+                        } else if (cell.includes('kampanija') || cell.includes('kampanijos')) {
+                            campaignIndex = j;
+                        } else if (cell.includes('nr.') || cell.includes('numeris')) {
+                            orderIndex = j;
+                        }
+                    }
+                    
+                    // Jei radome lentelės antraštę, ieškome duomenų žemiau
+                    if (hasTableHeaders) {
+                        let result = {};
+                        
+                        // Peržiūrime kitas eilutes
+                        for (let k = i + 1; k < Math.min(i + 20, jsonData.length); k++) {
+                            const dataRow = jsonData[k];
+                            if (!dataRow) continue;
+                            
+                            // Jei yra klientas stulpelyje
+                            if (clientIndex !== -1 && dataRow[clientIndex]) {
+                                result.clientName = String(dataRow[clientIndex]).trim();
+                            }
+                            
+                            // Jei yra užsakymo numeris
+                            if (orderIndex !== -1 && dataRow[orderIndex]) {
+                                result.orderNumber = String(dataRow[orderIndex]).trim();
+                            }
+                            
+                            // Jei yra kampanijos pavadinimas
+                            if (campaignIndex !== -1 && dataRow[campaignIndex]) {
+                                const campaign = String(dataRow[campaignIndex]).trim();
+                                // Bandome ištraukti kliento pavadinimą iš kampanijos
+                                const parts = campaign.split('_');
+                                if (parts.length > 1 && !result.clientName) {
+                                    result.clientName = parts[parts.length - 1].trim();
+                                }
+                            }
+                            
+                            // Jei radome bent vieną informaciją, grąžiname
+                            if (result.clientName || result.orderNumber) {
+                                return result;
+                            }
+                        }
+                    }
+                }
+                
+                return null;
+            }
+            
+            // Funkcija failo pavadinimo generavimui
+            function generateFileName(orderInfo, screenCode, videoFileName) {
+                // Ištraukiame originalaus failo pavadinimą be plėtinio
+                const lastDotIndex = videoFileName.lastIndexOf('.');
+                const origName = lastDotIndex !== -1 ? videoFileName.substring(0, lastDotIndex) : videoFileName;
+                const ext = lastDotIndex !== -1 ? videoFileName.substring(lastDotIndex) : '';
+                
+                // Jei turime pakankamai informacijos, generuojame pagal formatą
+                // <užsak.nr.>w<užsak. Savaitės nr.>_<ekranas pav.>_<klientas>
+                // Pvz.: 3589w39_Jasinskio_Jysk
+                if (orderInfo.orderNumber && orderInfo.weekNumber && screenCode) {
+                    let fileName = `${orderInfo.orderNumber}w${orderInfo.weekNumber}_${screenCode}`;
+                    
+                    // Pridedame kliento pavadinimą, jei turime
+                    if (orderInfo.clientName) {
+                        // Pašaliname neleistinus simbolius iš kliento pavadinimo
+                        const cleanClientName = orderInfo.clientName.replace(/[/\\?%*:|"<>]/g, '-');
+                        fileName += `_${cleanClientName}`;
+                    }
+                    
+                    return fileName + ext;
+                }
+                
+                // Jei nepavyko surinkti visų duomenų, naudojame paprastesnį formatą
+                return `${screenCode}_${origName}${ext}`;
+            }
+            
+            // Rezoliucijų analizės funkcija
+            function parseResolutionsFromExcel(jsonData) {
+                // Ieškome rezoliucijos, kodo stulpelių
+                let headerRow = -1;
+                let resolutionCol = -1;
+                let codeCol = -1;
+                
+                for (let i = 0; i < Math.min(jsonData.length, 100); i++) {
+                    const row = jsonData[i];
+                    if (!row || !row.length) continue;
+                    
+                    for (let j = 0; j < row.length; j++) {
+                        const cell = String(row[j] || '').toLowerCase().trim();
+                        if (cell.includes('rezoliucija')) {
+                            headerRow = i;
+                            resolutionCol = j;
+                        } else if (cell.includes('kodas')) {
+                            codeCol = j;
+                        }
+                    }
+                    
+                    if (headerRow !== -1 && resolutionCol !== -1) break;
+                }
+                
+                if (headerRow === -1 || resolutionCol === -1) {
+                    throw new Error('Nerasta rezoliucijos informacija Excel faile');
+                }
+                
+                // Išgauti rezoliucijas ir gruopuoti pagal rezoliucijos vertę
+                const resolutionsMap = {};
+                
+                for (let i = headerRow + 1; i < jsonData.length; i++) {
+                    const row = jsonData[i];
+                    if (!row || !row[resolutionCol]) continue;
+                    
+                    const resolution = String(row[resolutionCol]).trim();
+                    const code = codeCol !== -1 ? String(row[codeCol] || '').trim() : '';
+                    
+                    if (!resolutionsMap[resolution]) {
+                        resolutionsMap[resolution] = [];
+                    }
+                    
+                    if (code) {
+                        resolutionsMap[resolution].push(code);
+                    }
+                }
+                
+                // Konvertuoti į masyvą
+                return Object.entries(resolutionsMap).map(([resolution, codes]) => ({
+                    resolution,
+                    codes: [...new Set(codes)] // Pašalinti dublikatus
+                }));
+            }
+            
+            // Excel failo analizės mygtukas
+            analyzeExcelBtn.addEventListener('click', function() {
+                if (!excelFileInput.files.length) {
+                    alert('Pasirinkite Excel failą');
+                    return;
+                }
+                
+                const file = excelFileInput.files[0];
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        
+                        // Naudojame pirmą lapą
+                        const sheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[sheetName];
+                        
+                        // Konvertuojame į JSON
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+                            header: 1,
+                            defval: ""
+                        });
+                        
+                        // Ištraukiame užsakymo informaciją
+                        window.orderInfo = extractOrderInfo(jsonData);
+                        
+                        // Atnaujinti formos laukus
+                        if (window.orderInfo.orderNumber) {
+                            orderNumberInput.value = window.orderInfo.orderNumber;
+                        }
+                        if (window.orderInfo.weekNumber) {
+                            weekNumberInput.value = window.orderInfo.weekNumber;
+                        }
+                        if (window.orderInfo.clientName) {
+                            clientNameInput.value = window.orderInfo.clientName;
+                        }
+                        
+                        // Nuskaitome rezoliucijas ir ekranų kodus
+                        window.resolutionsData = parseResolutionsFromExcel(jsonData);
+                        
+                        // Rodome rezultatus
+                        displayExcelResults();
+                        
+                        // Atnaujiname generavimo formą
+                        updateGenerationForm();
+                    } catch (error) {
+                        console.error(error);
+                        excelResultDiv.innerHTML = `<div class="alert alert-danger">Klaida analizuojant Excel: ${error.message}</div>`;
+                    }
+                };
+                
+                reader.readAsArrayBuffer(file);
+            });
+            
+            // Excel rezultatų atvaizdavimas
+            function displayExcelResults() {
+                const resolutionsData = window.resolutionsData;
+                const orderInfo = window.orderInfo;
+                
+                if (resolutionsData.length) {
+                    let html = `<div class="alert alert-success">
+                        <strong>Rasta ${resolutionsData.length} skirtingų rezoliucijų</strong><br>`;
+                    
+                    // Rodome užsakymo informaciją, jei turime
+                    if (orderInfo.orderNumber) {
+                        html += `Užsakymo nr.: ${orderInfo.orderNumber}<br>`;
+                    }
+                    if (orderInfo.weekNumber) {
+                        html += `Savaitės nr.: ${orderInfo.weekNumber}<br>`;
+                    }
+                    if (orderInfo.clientName) {
+                        html += `Klientas: ${orderInfo.clientName}<br>`;
+                    }
+                    
+                    html += `</div>
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Rezoliucija</th>
+                                    <th>Ekranų kodai</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+                    
+                    resolutionsData.forEach(item => {
+                        html += `
+                            <tr>
+                                <td>${item.resolution}</td>
+                                <td>${item.codes.join(', ')}</td>
+                            </tr>`;
+                    });
+                    
+                    html += `
+                            </tbody>
+                        </table>`;
+                    
+                    excelResultDiv.innerHTML = html;
+                } else {
+                    excelResultDiv.innerHTML = `<div class="alert alert-warning">Nerasta rezoliucijų informacijos</div>`;
+                }
+            }
+            
+            // Video analizė
+            analyzeVideoBtn.addEventListener('click', function() {
+                if (!videoFileInput.files.length) {
+                    alert('Pasirinkite video failą');
+                    return;
+                }
+                
+                const file = videoFileInput.files[0];
+                window.videoFileData = {
+                    name: file.name,
+                    size: file.size,
+                    type: file.type
+                };
+                
+                // Atvaizduoti video informaciją
+                videoResultDiv.innerHTML = `
+                    <div class="alert alert-info">
+                        <strong>Video informacija:</strong><br>
+                        Pavadinimas: ${file.name}<br>
+                        Dydis: ${(file.size / (1024 * 1024)).toFixed(2)} MB<br>
+                        Tipas: ${file.type}
+                    </div>
+                `;
+                
+                updateGenerationForm();
+            });
+            
+            // Atnaujinti generavimo formą
+            function updateGenerationForm() {
+                if (window.resolutionsData.length && window.videoFileData) {
+                    let html = `<p>Pasirinkite rezoliucijas, kurioms norite konvertuoti "${window.videoFileData.name}" failą:</p>`;
+                    
+                    html += `<div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="selectAllCheckbox" checked>
+                        <label class="form-check-label" for="selectAllCheckbox">
+                            Pasirinkti visas rezoliucijas
+                        </label>
+                    </div>`;
+                    
+                    window.resolutionsData.forEach((item, index) => {
+                        html += `
+                            <div class="form-check">
+                                <input class="form-check-input resolution-checkbox" type="checkbox" id="resolution${index}" data-index="${index}" checked>
+                                <label class="form-check-label" for="resolution${index}">
+                                    ${item.resolution} (${item.codes.join(', ')})
+                                </label>
+                            </div>
+                        `;
+                    });
+                    
+                    generationFormDiv.innerHTML = html;
+                    generateBtn.disabled = false;
+                    
+                    // Pridėti "select all" funkcionalumą
+                    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+                    const resolutionCheckboxes = document.querySelectorAll('.resolution-checkbox');
+                    
+                    selectAllCheckbox.addEventListener('change', function() {
+                        resolutionCheckboxes.forEach(cb => {
+                            cb.checked = selectAllCheckbox.checked;
+                        });
+                    });
+                    
+                    // Atnaujinti "select all" būseną pagal individualius pasirinkimus
+                    resolutionCheckboxes.forEach(cb => {
+                        cb.addEventListener('change', function() {
+                            const allChecked = Array.from(resolutionCheckboxes).every(cb => cb.checked);
+                            selectAllCheckbox.checked = allChecked;
+                        });
+                    });
+                }
+            }
+            
+            // Rankinio įvedimo formos rodymas/slėpimas
+            toggleManualBtn.addEventListener('click', function() {
+                if (manualOrderForm.classList.contains('hidden')) {
+                    manualOrderForm.classList.remove('hidden');
+                    toggleManualBtn.textContent = 'Slėpti rankinį įvedimą';
+                } else {
+                    manualOrderForm.classList.add('hidden');
+                    toggleManualBtn.textContent = 'Rodyti rankinį įvedimą';
+                }
+            });
+            
+            // Rankinio įvedimo formos atnaujinimas
+            updateOrderInfoBtn.addEventListener('click', function() {
+                if (orderNumberInput.value) {
+                    window.orderInfo.orderNumber = orderNumberInput.value;
+                }
+                if (weekNumberInput.value) {
+                    window.orderInfo.weekNumber = weekNumberInput.value;
+                }
+                if (clientNameInput.value) {
+                    window.orderInfo.clientName = clientNameInput.value;
+                }
+                
+                // Atnaujiname rezultatų atvaizdavimą
+                displayExcelResults();
+                
+                // Pranešimas apie sėkmingą atnaujinimą
+                generationResultDiv.innerHTML = `<div class="alert alert-success">Užsakymo informacija atnaujinta sėkmingai!</div>`;
+                setTimeout(() => {
+                    generationResultDiv.innerHTML = '';
+                }, 3000);
+            });
+            
+            // Generavimo mygtukas
+            generateBtn.addEventListener('click', function() {
+                // Surinkti pasirinktus indeksus
+                const selectedIndexes = Array.from(document.querySelectorAll('.resolution-checkbox:checked'))
+                    .map(cb => parseInt(cb.getAttribute('data-index')));
+                
+                if (!selectedIndexes.length) {
+                    alert('Pasirinkite bent vieną rezoliuciją');
+                    return;
+                }
+                
+                const selectedResolutions = selectedIndexes.map(index => window.resolutionsData[index]);
+                
+                // Patikrinti ar turime pakankamai informacijos
+                if (!window.orderInfo.orderNumber || !window.orderInfo.weekNumber) {
+                    if (confirm('Trūksta užsakymo numerio arba savaitės numerio. Ar norite įvesti šią informaciją rankiniu būdu?')) {
+                        manualOrderForm.classList.remove('hidden');
+                        toggleManualBtn.textContent = 'Slėpti rankinį įvedimą';
+                        return;
+                    }
+                }
+                
+                // Pradėti generavimo procesą
+                generationProgressDiv.classList.remove('hidden');
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+                generationResultDiv.innerHTML = '<div class="alert alert-info">Pradedamas konvertavimas...</div>';
+                
+                // Simuliuoti konvertavimo procesą
+                simulateConversion(selectedResolutions);
+            });
+            
+            // Simuliuoti konvertavimo procesą (be serverio)
+            function simulateConversion(resolutions) {
+                const totalSteps = resolutions.length;
+                let currentStep = 0;
+                
+                // Būsenos atnaujinimas
+                function updateProgress(step, message) {
+                    const percent = Math.round((step / totalSteps) * 100);
+                    progressBar.style.width = `${percent}%`;
+                    progressBar.textContent = `${percent}%`;
+                    generationResultDiv.innerHTML = `<div class="alert alert-info">${message}</div>`;
+                }
+                
+                // Imituoti konvertavimo procesą
+                function processNextResolution() {
+                    if (currentStep >= totalSteps) {
+                        // Konvertavimas baigtas
+                        generationResultDiv.innerHTML = `
+                            <div class="alert alert-success">
+                                Konvertavimas sėkmingai baigtas! Sukurti ${totalSteps} failai.
+                            </div>
+                        `;
+                        showDownloadLinks(resolutions);
+                        return;
+                    }
+                    
+                    const resolution = resolutions[currentStep];
+                    updateProgress(currentStep, `Konvertuojama į ${resolution.resolution} (${currentStep + 1}/${totalSteps})...`);
+                    
+                    // Imituoti konvertavimo laiką
+                    setTimeout(() => {
+                        currentStep++;
+                        processNextResolution();
+                    }, 1500); // 1.5 sekundės vienam konvertavimui (imitacija)
+                }
+                
+                // Pradėti konvertavimo imitaciją
+                processNextResolution();
+            }
+            
+            // Rodyti parsisiuntimo nuorodas
+            function showDownloadLinks(resolutions) {
+                downloadSection.classList.remove('hidden');
+                
+                const videoFileName = window.videoFileData.name;
+                const orderInfo = window.orderInfo;
+                let html = '';
+                
+                resolutions.forEach(res => {
+                    // Kiekvienam ekrano kodui kuriame atskirą nuorodą
+                    res.codes.forEach(code => {
+                        const fileName = generateFileName(orderInfo, code, videoFileName);
+                        html += `
+                            <div class="mb-2">
+                                <button class="btn btn-outline-primary mock-download" data-filename="${fileName}">
+                                    Parsisiųsti: ${fileName} (${res.resolution})
+                                </button>
+                            </div>`;
+                    });
+                });
+                
+                downloadLinksDiv.innerHTML = html;
+                
+                // Pridėti imitacinį parsisiuntimo funkcionalumą
+                document.querySelectorAll('.mock-download').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const fileName = this.getAttribute('data-filename');
+                        alert(`Realiame sprendime čia būtų parsisiųstas failas: ${fileName}.\n\nKadangi tai MVP be serverio pusės, konvertavimo funkcionalumas yra tik imituojamas.`);
+                    });
+                });
+            }
+        });
+    </script>
+</body>
+</html>
